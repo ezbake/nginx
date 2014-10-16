@@ -79,6 +79,7 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
                 peers->peer[n].sockaddr = server[i].addrs[j].sockaddr;
                 peers->peer[n].socklen = server[i].addrs[j].socklen;
                 peers->peer[n].name = server[i].addrs[j].name;
+                peers->peer[n].url = server[i].url;
                 peers->peer[n].weight = server[i].weight;
                 peers->peer[n].effective_weight = server[i].weight;
                 peers->peer[n].current_weight = 0;
@@ -133,6 +134,7 @@ ngx_http_upstream_init_round_robin(ngx_conf_t *cf,
                 backup->peer[n].sockaddr = server[i].addrs[j].sockaddr;
                 backup->peer[n].socklen = server[i].addrs[j].socklen;
                 backup->peer[n].name = server[i].addrs[j].name;
+                backup->peer[n].url = server[i].url;
                 backup->peer[n].weight = server[i].weight;
                 backup->peer[n].effective_weight = server[i].weight;
                 backup->peer[n].current_weight = 0;
@@ -417,6 +419,7 @@ ngx_http_upstream_get_round_robin_peer(ngx_peer_connection_t *pc, void *data)
     pc->sockaddr = peer->sockaddr;
     pc->socklen = peer->socklen;
     pc->name = &peer->name;
+    pc->url = &peer->url;
 
     /* ngx_unlock_mutex(rrp->peers->mutex); */
 

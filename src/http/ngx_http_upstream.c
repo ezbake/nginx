@@ -135,6 +135,8 @@ static ngx_int_t ngx_http_upstream_copy_content_encoding(ngx_http_request_t *r,
 static ngx_int_t ngx_http_upstream_add_variables(ngx_conf_t *cf);
 static ngx_int_t ngx_http_upstream_addr_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_upstream_hostname_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_upstream_status_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_upstream_response_time_variable(ngx_http_request_t *r,
@@ -337,6 +339,10 @@ ngx_module_t  ngx_http_upstream_module = {
 
 
 static ngx_http_variable_t  ngx_http_upstream_vars[] = {
+
+    { ngx_string("upstream_hostname"), NULL,
+      ngx_http_upstream_hostname_variable, 0,
+      NGX_HTTP_VAR_NOCACHEABLE, 0 },
 
     { ngx_string("upstream_addr"), NULL,
       ngx_http_upstream_addr_variable, 0,
@@ -1480,6 +1486,98 @@ ngx_http_upstream_reinit(ngx_http_request_t *r, ngx_http_upstream_t *u)
 }
 
 
+char *
+strnstr(s, find, slen)
+    const char *s;
+    const char *find;
+    size_t slen;
+{
+    char c, sc;
+    size_t len;
+
+    if ((c = *find++) != '\0') {
+        len = strlen(find);
+        do {
+            do {
+                if ((sc = *s++) == '\0' || slen-- < 1)
+                return (NULL);
+            } while (sc != c);
+            if (len > slen)
+            {
+                return (NULL);
+            }
+        } while (strncmp(s, find, len) != 0);
+        s--;
+    }
+    return ((char *)s);
+}
+
+static void
+openshift_fixup(ngx_http_request_t *r, ngx_http_upstream_t *u)
+{
+    ngx_str_t * pre_str = ngx_palloc(r->pool, sizeof(ngx_str_t));
+    ngx_str_t * host_str = ngx_palloc(r->pool, sizeof(ngx_str_t));
+    ngx_str_t * post_str = ngx_palloc(r->pool, sizeof(ngx_str_t));
+
+    int pre_size = 0;
+    int host_size = 0;
+    int post_size = 0;
+
+    char * host_header_key_loc = NULL;
+    char * next_header_key_loc = NULL;
+
+    ngx_buf_t * replacement_buffer = NULL;
+
+    host_header_key_loc = strnstr(u->request_bufs->buf->start,"Host: ",u->request_bufs->buf->last - u->request_bufs->buf->start);
+    if (host_header_key_loc != NULL)
+    {
+        if (u->peer.url != NULL)
+        {
+            pre_size = (unsigned char *)host_header_key_loc - u->request_bufs->buf->start;
+            pre_str->data = ngx_palloc(r->pool, pre_size);
+            ngx_memcpy(pre_str->data, u->request_bufs->buf->start, pre_size);
+            pre_str->len = pre_size;
+
+            next_header_key_loc = strnstr(host_header_key_loc, "\r\n", u->request_bufs->buf->last - (unsigned char *)host_header_key_loc);
+            next_header_key_loc += 2;
+            post_size = u->request_bufs->buf->last - (unsigned char *)next_header_key_loc;
+            post_str->data = ngx_palloc(r->pool, post_size);
+            ngx_memcpy(post_str->data, next_header_key_loc, post_size);
+            post_str->len = post_size;
+
+            host_size = 8 + u->peer.url->len;  // the 8 is for: Host: \r\n
+            host_str->data = ngx_palloc(r->pool, host_size);
+            host_str->data[0] = 'H';
+            host_str->data[1] = 'o';
+            host_str->data[2] = 's';
+            host_str->data[3] = 't';
+            host_str->data[4] = ':';
+            host_str->data[5] = ' ';
+            host_str->data[host_size - 2] = '\r';
+            host_str->data[host_size - 1] = '\n';
+            ngx_memcpy((host_str->data)+6, u->peer.url->data, host_size-8);
+            host_str->len = host_size;
+
+            replacement_buffer = ngx_create_temp_buf(r->pool, pre_size+host_size+post_size);
+
+            replacement_buffer->last = ngx_copy(replacement_buffer->last, pre_str->data, pre_str->len);
+            replacement_buffer->last = ngx_copy(replacement_buffer->last, host_str->data, host_str->len);
+            replacement_buffer->last = ngx_copy(replacement_buffer->last, post_str->data, post_str->len);
+
+            replacement_buffer->flush = u->request_bufs->buf->flush;
+            u->request_bufs->buf = replacement_buffer;
+        }
+        else
+        {
+            ngx_log_error(NGX_LOG_ERR,
+                          r->connection->log,
+                          0,
+                          "**** openshift_fixup upstream url NOT FOUND!");
+        }
+    }
+}
+
+
 static void
 ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u)
 {
@@ -1497,6 +1595,8 @@ ngx_http_upstream_send_request(ngx_http_request_t *r, ngx_http_upstream_t *u)
     }
 
     c->log->action = "sending request to upstream";
+
+    openshift_fixup(r, u);
 
     rc = ngx_output_chain(&u->output, u->request_sent ? NULL : u->request_bufs);
 
@@ -4249,6 +4349,34 @@ ngx_http_upstream_add_variables(ngx_conf_t *cf)
 
 
 static ngx_int_t
+ngx_http_upstream_hostname_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    u_char                     *p;
+
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    if (r->upstream == NULL || r->upstream->peer.name == NULL) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    p = ngx_pnalloc(r->pool, r->upstream->peer.name->len);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    v->data = p;
+    ngx_memcpy(v->data, r->upstream->peer.name->data, r->upstream->peer.name->len);
+
+    v->len = r->upstream->peer.name->len;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 ngx_http_upstream_addr_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
@@ -4260,6 +4388,11 @@ ngx_http_upstream_addr_variable(ngx_http_request_t *r,
     v->valid = 1;
     v->no_cacheable = 0;
     v->not_found = 0;
+    if (r->upstream != NULL) {
+        if (((r->upstream)->peer.name) != NULL) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "**** upstream_addr r->upstream.peer.name != NULL %V", r->upstream->peer.name);
+        }
+    }
 
     if (r->upstream_states == NULL || r->upstream_states->nelts == 0) {
         v->not_found = 1;
@@ -4821,7 +4954,9 @@ ngx_http_upstream_server(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     us->weight = weight;
     us->max_fails = max_fails;
     us->fail_timeout = fail_timeout;
-
+    us->url.len = u.url.len;
+    us->url.data = ngx_palloc(cf->pool,us->url.len);
+    ngx_memcpy(us->url.data,u.url.data,u.url.len);
     return NGX_CONF_OK;
 
 invalid:

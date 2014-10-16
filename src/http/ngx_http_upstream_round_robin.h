@@ -18,7 +18,7 @@ typedef struct {
     struct sockaddr                *sockaddr;
     socklen_t                       socklen;
     ngx_str_t                       name;
-
+    ngx_str_t                       url;
     ngx_int_t                       current_weight;
     ngx_int_t                       effective_weight;
     ngx_int_t                       weight;

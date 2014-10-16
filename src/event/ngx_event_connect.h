@@ -41,6 +41,8 @@ struct ngx_peer_connection_s {
     socklen_t                        socklen;
     ngx_str_t                       *name;
 
+    ngx_str_t                       *url;
+
     ngx_uint_t                       tries;
 
     ngx_event_get_peer_pt            get;

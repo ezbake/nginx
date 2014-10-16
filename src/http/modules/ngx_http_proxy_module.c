@@ -81,6 +81,10 @@ typedef struct {
     ngx_uint_t                     ssl;
     ngx_uint_t                     ssl_protocols;
     ngx_str_t                      ssl_ciphers;
+    ngx_uint_t                     ssl_verify_depth;
+    ngx_str_t                      ssl_client_certificate;
+    ngx_str_t                      ssl_certificate_key;
+    ngx_str_t                      ssl_certificate;
 #endif
 } ngx_http_proxy_loc_conf_t;
 
@@ -551,6 +555,34 @@ static ngx_command_t  ngx_http_proxy_commands[] = {
       ngx_conf_set_str_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_proxy_loc_conf_t, ssl_ciphers),
+      NULL },
+
+    { ngx_string("proxy_ssl_verify_depth"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_proxy_loc_conf_t, ssl_verify_depth),
+      NULL },
+
+    { ngx_string("proxy_ssl_client_certificate"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_proxy_loc_conf_t, ssl_client_certificate),
+      NULL },
+
+    { ngx_string("proxy_ssl_certificate_key"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_proxy_loc_conf_t, ssl_certificate_key),
+      NULL },
+
+    { ngx_string("proxy_ssl_certificate"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_proxy_loc_conf_t, ssl_certificate),
       NULL },
 
 #endif
@@ -2443,6 +2475,7 @@ ngx_http_proxy_create_loc_conf(ngx_conf_t *cf)
     conf->upstream.intercept_errors = NGX_CONF_UNSET;
 #if (NGX_HTTP_SSL)
     conf->upstream.ssl_session_reuse = NGX_CONF_UNSET;
+    conf->ssl_verify_depth = NGX_CONF_UNSET_UINT;
 #endif
 
     /* "proxy_cyclic_temp_file" is disabled */
@@ -2725,8 +2758,35 @@ ngx_http_proxy_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_str_value(conf->ssl_ciphers, prev->ssl_ciphers,
                              "DEFAULT");
 
-    if (conf->ssl && ngx_http_proxy_set_ssl(cf, conf) != NGX_OK) {
-        return NGX_CONF_ERROR;
+    ngx_conf_merge_uint_value(conf->ssl_verify_depth,
+                              prev->ssl_verify_depth, 1);
+
+    ngx_conf_merge_str_value(conf->ssl_client_certificate, prev->ssl_client_certificate,
+                             "");
+
+    ngx_conf_merge_str_value(conf->ssl_certificate, prev->ssl_certificate,
+                             "");
+
+    ngx_conf_merge_str_value(conf->ssl_certificate_key, prev->ssl_certificate_key,
+                             "");
+
+    /* valid ssl configuration if https is specified as proxy_pass */
+    if (conf->ssl)
+    {
+        if ((conf->ssl_certificate.len != 0) &&
+            (conf->ssl_certificate_key.len == 0))
+        {
+            ngx_log_error(NGX_LOG_EMERG, cf->log, 0,
+                          "no \"proxy_ssl_certificate_key\" is defined for"
+                          " the upstream proxy pass but a "
+                          "\"proxy_ssl_certificate\" was specified" );
+            return NGX_CONF_ERROR;
+        }
+
+        /* setup SSL context object */
+        if (ngx_http_proxy_set_ssl(cf, conf) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
     }
 #endif
 
@@ -3774,6 +3834,14 @@ ngx_http_proxy_set_ssl(ngx_conf_t *cf, ngx_http_proxy_loc_conf_t *plcf)
         return NGX_ERROR;
     }
 
+    cln = ngx_pool_cleanup_add(cf->pool, 0);
+    if (cln == NULL) {
+        return NGX_ERROR;
+    }
+
+    cln->handler = ngx_ssl_cleanup_ctx;
+    cln->data = plcf->upstream.ssl;
+
     if (SSL_CTX_set_cipher_list(plcf->upstream.ssl->ctx,
                                 (const char *) plcf->ssl_ciphers.data)
         == 0)
@@ -3784,13 +3852,25 @@ ngx_http_proxy_set_ssl(ngx_conf_t *cf, ngx_http_proxy_loc_conf_t *plcf)
         return NGX_ERROR;
     }
 
-    cln = ngx_pool_cleanup_add(cf->pool, 0);
-    if (cln == NULL) {
+    /* set our public and private key if configured */
+    if (plcf->ssl_certificate.len != 0) {
+        if (ngx_ssl_certificate(cf, plcf->upstream.ssl,
+                &plcf->ssl_certificate, &plcf->ssl_certificate_key) != NGX_OK)
+        {
         return NGX_ERROR;
+        }
     }
 
-    cln->handler = ngx_ssl_cleanup_ctx;
-    cln->data = plcf->upstream.ssl;
+    /* set our expected CAs if configured,
+     * else SSL will use the system defaults */
+    if (plcf->ssl_client_certificate.len != 0) {
+        if (ngx_ssl_client_certificate(cf, plcf->upstream.ssl,
+                                       &plcf->ssl_client_certificate,
+                                       plcf->ssl_verify_depth) != NGX_OK)
+        {
+           return NGX_ERROR;
+        }
+    }
 
     return NGX_OK;
 }

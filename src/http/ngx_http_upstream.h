@@ -92,6 +92,7 @@ typedef struct {
     ngx_uint_t                       weight;
     ngx_uint_t                       max_fails;
     time_t                           fail_timeout;
+    ngx_str_t                        url;
 
     unsigned                         down:1;
     unsigned                         backup:1;
