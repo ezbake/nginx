@@ -9,7 +9,7 @@ To synchronize changesets (commits) from the Nginx mercurial repo, you'll need [
 Excute the commands below to get new commits from Nginx into the 
 nginx_master branch of this repo:
 
-* git clone &lt;github repo>&gt;
+* git clone &lt;github repo&gt;
 * cd nginx
 * mv .git .git2
 * hg init
@@ -17,7 +17,7 @@ nginx_master branch of this repo:
 * hg update -C default
 * hg bookmark -r default nginx_master
 * mv .git2 .git
-* hg push -B nginx_master git+ssh://<github repo>
+* hg push -B nginx_master git+ssh://&lt;github repo&gt;
 * cd ../
 * rm -rf nginx
 
